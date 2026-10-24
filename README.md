@@ -111,13 +111,6 @@ artist_string 空
 1.4::two horns::, 1.5::tail with heart at the tip::, slim body
 ```
 
-**写法建议**（这些是踩出来的）：
-
-- 出过错的特征用数值权重钉住：`1.4::two horns::`
-- **同一个特征不要用两套描述** —— `curved horns` + `purple horns` 会画成四个角
-- 长复合词拆开更准：`horns on forehead hairline` 比 `horns on head` 准
-- **画面里要不要人，写在 prompt 里**，`extra_tags` 只放外形
-
 ---
 
 ## 构图
