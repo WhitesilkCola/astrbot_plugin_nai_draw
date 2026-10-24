@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>生图设置</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#272b35; --txt:#e6e8ee;
+    --dim:#9aa3b2; --accent:#5b8cff; --ok:#3fb950; --err:#f85149; --warn:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:20px;background:var(--bg);color:var(--txt);
+    font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  }
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:18px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 12px;font-weight:600;color:var(--dim);letter-spacing:.04em}
+  .row{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:start;margin-bottom:10px}
+  .row label{padding-top:6px;color:var(--dim);font-size:13px}
+  input,textarea,select{
+    width:100%;background:#0c0e13;border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:7px 9px;font:inherit;font-size:13px;
+  }
+  textarea{resize:vertical;min-height:64px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5}
+  input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  .hint{color:var(--dim);font-size:11px;margin-top:4px;line-height:1.5}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{
+    border:1px solid var(--line);background:#1e2230;color:var(--txt);
+    padding:7px 14px;border-radius:6px;font:inherit;font-size:13px;cursor:pointer;
+  }
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+  button:disabled{opacity:.55;cursor:default}
+  .msg{margin-top:10px;font-size:12px;padding:8px 10px;border-radius:6px;display:none;white-space:pre-wrap}
+  .msg.show{display:block}
+  .msg.ok{background:rgba(63,185,80,.12);color:var(--ok);border:1px solid rgba(63,185,80,.3)}
+  .msg.err{background:rgba(248,81,73,.12);color:var(--err);border:1px solid rgba(248,81,73,.3)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px}
+  .tag.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .tag.cool{background:rgba(210,153,34,.15);color:var(--warn)}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+  .switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding-top:1px}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .switch .slider{position:relative;width:44px;height:24px;border-radius:12px;background:#2a2f3d;transition:background .18s;flex:0 0 auto}
+  .switch .slider::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#8b93a3;transition:transform .18s,background .18s}
+  .switch input:checked + .slider{background:rgba(91,140,255,.32)}
+  .switch input:checked + .slider::after{transform:translateX(20px);background:var(--accent)}
+  .switch .sw-label{font-size:13px;color:var(--dim)}
+  .switch input:checked ~ .sw-label{color:var(--txt)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>生图设置</h1>
+  <div class="sub">填好中转站地址和 Key 就能用。保存后立即生效，不需要重启。</div>
+
+  <div class="card">
+    <h2>中转站</h2>
+    <div class="row">
+      <label>接口地址</label>
+      <div>
+        <input id="api_url" placeholder="https://your-relay.example.com/ai/generate-image" />
+        <div class="hint">NovelAI 格式的完整地址，要能接受 {"input","model","action","parameters"} 这个请求体。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>API Key</label>
+      <div>
+        <textarea id="api_keys" rows="3" placeholder="一行一个，填多个会自动轮换"></textarea>
+        <div class="hint">回显是掩码的。只想改其他配置时留空不动它；要换 key 就整行覆盖。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>Key 失败冷却</label>
+      <div>
+        <input id="key_cooldown_seconds" type="number" min="0" />
+        <div class="hint">秒。某个 key 报错后这段时间不再尝试，自动切下一个。</div>
+      </div>
+    </div>
+    <div class="btns">
+      <button id="btn-test">测试连接</button>
+      <button id="btn-stats">刷新 Key 状态</button>
+    </div>
+    <div id="msg-test" class="msg"></div>
+    <div id="stats-box" style="margin-top:12px;display:none">
+      <table>
+        <thead><tr><th>#</th><th>Key</th><th>累计</th><th>状态</th><th>最后错误</th></tr></thead>
+        <tbody id="stats-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>生成参数</h2>
+    <div class="row"><label>模型</label><div><input id="model" /></div></div>
+    <div class="row"><label>步数</label><div><input id="steps" type="number" min="1" max="100" /></div></div>
+    <div class="row"><label>CFG scale</label><div><input id="scale" type="number" step="0.1" min="1" max="20" /></div></div>
+    <div class="row"><label>采样器</label><div><input id="sampler" /></div></div>
+    <div class="row"><label>竖构图</label><div><input id="portrait_size" placeholder="832x1216" /></div></div>
+    <div class="row"><label>横构图</label><div><input id="landscape_size" placeholder="1216x832" /></div></div>
+  </div>
+
+  <div class="card">
+    <h2>画风与内容</h2>
+    <div class="row">
+      <label>NSFW</label>
+      <div>
+        <label class="switch">
+          <input type="checkbox" id="nsfw" />
+          <span class="slider"></span>
+          <span class="sw-label" id="nsfw-label">开启</span>
+        </label>
+        <div class="hint">
+          开启：提示词末尾追加 <span class="mono">nsfw</span>。<br />
+          关闭：去掉它，并在负面词里叠加一整套遮挡词（nude / naked / nipples / sex …）。
+          关掉后配方库里那些露骨配方也会被压制。
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <label>画师串</label>
+      <div>
+        <textarea id="artist_string" rows="2"></textarea>
+        <div class="hint">决定画风。留空则不加。支持权重语法，例如 [[[artist:xxx]]]。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>固定正向 tag</label>
+      <div>
+        <textarea id="extra_tags" rows="3"></textarea>
+        <div class="hint">每次出图都会拼进去。人物角色固定外形放这里（发型、瞳色、特殊特征、体型）。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>画质与构图词</label>
+      <div>
+        <textarea id="quality_tags" rows="4"></textarea>
+        <div class="hint">末尾的 <span class="mono">nsfw</span> 是内容开关，只出普通图就删掉它。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>负面提示词</label>
+      <div>
+        <textarea id="negative_prompt" rows="4"></textarea>
+        <div class="hint">花括号加权，越多层权重越高。角色特有的问题自己往这里加。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>行为</h2>
+    <div class="row">
+      <label>口语翻译表</label>
+      <div>
+        <textarea id="auto_tag_map" rows="4" placeholder="黑丝 => black_thighhighs, thighhighs&#10;跪着 => kneeling"></textarea>
+        <div class="hint">一行一条 <span class="mono">口语 =&gt; tag</span>。只加不改。</div>
+      </div>
+    </div>
+    <div class="row"><label>冷却（秒）</label><div><input id="cooldown_seconds" type="number" min="0" /></div></div>
+    <div class="row"><label>等待提示语</label><div><input id="wait_message" /></div></div>
+  </div>
+
+  <div class="btns" style="margin-bottom:30px">
+    <button id="btn-save" class="primary">保存并生效</button>
+    <button id="btn-reload">重新读取</button>
+  </div>
+  <div id="msg-save" class="msg"></div>
+</div>
+
+<script>
+(function () {
+  const P = window.AstrBotPluginPage;
+  const $ = (id) => document.getElementById(id);
+
+  // 文本字段
+  const TEXT = ["api_url", "model", "sampler", "portrait_size", "landscape_size",
+                "wait_message", "artist_string"];
+  // 多行
+  const AREA = ["api_keys", "extra_tags", "quality_tags", "negative_prompt", "auto_tag_map"];
+  // 数字
+  const NUM = ["key_cooldown_seconds", "steps", "scale", "cooldown_seconds"];
+
+  function showMsg(el, text, ok) {
+    el.textContent = text;
+    el.className = "msg show " + (ok ? "ok" : "err");
+  }
+
+  async function load() {
+    try {
+      const res = await P.apiGet("config");
+      const c = (res && res.config) || {};
+      TEXT.forEach((k) => { if (c[k] != null) $(k).value = c[k]; });
+      AREA.forEach((k) => { if (c[k] != null) $(k).value = c[k]; });
+      NUM.forEach((k) => { if (c[k] != null) $(k).value = c[k]; });
+      $("nsfw").checked = c.nsfw !== false;
+      syncNsfwLabel();
+    } catch (e) {
+      showMsg($("msg-save"), "读取配置失败：" + e, false);
+    }
+  }
+
+  function syncNsfwLabel() {
+    $("nsfw-label").textContent = $("nsfw").checked ? "开启" : "关闭";
+  }
+  $("nsfw").addEventListener("change", syncNsfwLabel);
+
+  function collect() {
+    const body = {};
+    TEXT.forEach((k) => { body[k] = $(k).value.trim(); });
+    AREA.forEach((k) => { body[k] = $(k).value; });
+    NUM.forEach((k) => { body[k] = $(k).value === "" ? 0 : Number($(k).value); });
+    body.nsfw = $("nsfw").checked;
+    return body;
+  }
+
+  $("btn-save").onclick = async () => {
+    const btn = $("btn-save");
+    btn.disabled = true;
+    try {
+      const res = await P.apiPost("config", collect());
+      if (res && res.success) {
+        showMsg($("msg-save"), res.message || "已保存", true);
+        await load();
+      } else {
+        showMsg($("msg-save"), (res && res.message) || "保存失败", false);
+      }
+    } catch (e) {
+      showMsg($("msg-save"), "保存失败：" + e, false);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  $("btn-reload").onclick = load;
+
+  $("btn-test").onclick = async () => {
+    const btn = $("btn-test");
+    btn.disabled = true;
+    showMsg($("msg-test"), "正在测试…", true);
+    try {
+      const res = await P.apiPost("test", {
+        api_url: $("api_url").value.trim(),
+        api_keys: $("api_keys").value,
+      });
+      showMsg($("msg-test"), (res && res.message) || "无返回", !!(res && res.success));
+    } catch (e) {
+      showMsg($("msg-test"), "测试失败：" + e, false);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  $("btn-stats").onclick = async () => {
+    try {
+      const res = await P.apiGet("stats");
+      const rows = (res && res.keys) || [];
+      const tb = $("stats-body");
+      tb.innerHTML = "";
+      rows.forEach((k) => {
+        const tr = document.createElement("tr");
+        const st = k.cooldown > 0
+          ? '<span class="tag cool">冷却 ' + k.cooldown + "s</span>"
+          : '<span class="tag ok">可用</span>';
+        tr.innerHTML =
+          "<td>" + k.index + "</td>" +
+          '<td class="mono">' + (k.mask || "") + "</td>" +
+          "<td>" + (k.count || 0) + "</td>" +
+          "<td>" + st + "</td>" +
+          '<td class="mono" style="color:var(--dim)">' + (k.last_err || "—") + "</td>";
+        tb.appendChild(tr);
+      });
+      $("stats-box").style.display = rows.length ? "block" : "none";
+    } catch (e) {
+      showMsg($("msg-test"), "读取状态失败：" + e, false);
+    }
+  };
+
+  (async () => {
+    if (P && P.ready) { try { await P.ready(); } catch (e) {} }
+    await load();
+  })();
+})();
+</script>
+</body>
+</html>

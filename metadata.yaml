@@ -1,0 +1,8 @@
+name: astrbot_plugin_nai_draw
+display_name: "NovelAI 生图"
+desc: "让 bot 会出图。接 NovelAI 格式中转站，由 LLM 用自然语言触发，支持多 key 轮换、配方库、自带 WebUI 设置页。"
+short_desc: "自然语言触发的 NovelAI 生图"
+author: "WhitesilkCola"
+version: "1.0.0"
+repo: "https://github.com/WhitesilkCola/astrbot_plugin_nai_draw"
+astrbot_version: ">=4.26,<5"

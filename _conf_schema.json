@@ -1,0 +1,104 @@
+{
+  "api_url": {
+    "description": "中转站地址",
+    "hint": "NovelAI 格式的生图接口完整地址，例如 https://your-relay.example.com/ai/generate-image 。也可以直接在插件的设置页面里填。",
+    "type": "string",
+    "default": ""
+  },
+  "api_keys": {
+    "description": "API Key",
+    "hint": "一行一个。填多个会自动轮换：某个 key 报错就冷却一段时间并切下一个，平时按累计用量升序挑选。",
+    "type": "text",
+    "default": ""
+  },
+  "key_cooldown_seconds": {
+    "description": "Key 失败冷却（秒）",
+    "hint": "某个 key 报错后，这段时间内不再尝试它。",
+    "type": "int",
+    "default": 600
+  },
+  "model": {
+    "description": "模型",
+    "hint": "NovelAI 模型标识，例如 nai-diffusion-4-5-full / nai-diffusion-4-5-curated / nai-diffusion-5-full。",
+    "type": "string",
+    "default": "nai-diffusion-4-5-full"
+  },
+  "steps": {
+    "description": "步数",
+    "hint": "28~34 比较均衡。步数越高越慢，手部细节需要更多步数才收敛。",
+    "type": "int",
+    "default": 32
+  },
+  "scale": {
+    "description": "CFG scale",
+    "hint": "提示词服从度，NovelAI 建议 5~7。",
+    "type": "float",
+    "default": 6
+  },
+  "sampler": {
+    "description": "采样器",
+    "hint": "推荐 k_dpmpp_2m_sde。",
+    "type": "string",
+    "default": "k_dpmpp_2m_sde"
+  },
+  "portrait_size": {
+    "description": "竖构图尺寸",
+    "hint": "宽x高。站姿、半身、自拍用。",
+    "type": "string",
+    "default": "832x1216"
+  },
+  "landscape_size": {
+    "description": "横构图尺寸",
+    "hint": "宽x高。躺姿、横向大场景用。",
+    "type": "string",
+    "default": "1216x832"
+  },
+  "artist_string": {
+    "description": "画师串",
+    "hint": "决定画风，留空则不加。改这一项比改其他任何配置对画风的影响都大。可写权重语法，例如 [[[artist:xxx]]]。",
+    "type": "string",
+    "default": ""
+  },
+  "extra_tags": {
+    "description": "固定正向 tag",
+    "hint": "每次出图都会拼进去的内容。人物角色固定外形放这里（发型、瞳色、特殊特征、体型）。留空则不追加。",
+    "type": "text",
+    "default": ""
+  },
+  "nsfw": {
+    "description": "NSFW 开关",
+    "hint": "开启时在提示词末尾追加 nsfw；关闭时去掉它，并在负面词里叠加一整套遮挡词（nude / naked / nipples / sex …）。关掉后配方库里那些露骨配方也会被压制。",
+    "type": "bool",
+    "default": true
+  },
+  "quality_tags": {
+    "description": "画质与构图词",
+    "hint": "追加在提示词末尾。含画质词 + 构图分离词（景深/背景虚化/轮廓光，解决人物和背景糊在一起）。是否出 NSFW 由下面的 nsfw 开关控制。",
+    "type": "text",
+    "default": "perfect anatomy, anatomically correct, sane proportions, 1.5::perfect hands::, 1.3::detailed hands::, 1.3::slender fingers::, depth of field, sharp focus, blurred background, bokeh, rim light, 2::best quality, amazing quality, very aesthetic, absurdres, highly detailed::"
+  },
+  "negative_prompt": {
+    "description": "负面提示词",
+    "hint": "花括号加权，越多层权重越高。角色特有的问题（多余器官、耳朵、特定配色）自己往这里加。",
+    "type": "text",
+    "default": "{{{{bad anatomy}}}}, {{{{bad proportions}}}}, {{{{extra arms}}}}, {{{{extra legs}}}}, {{{{extra limbs}}}}, {{{{extra hands}}}}, {{{{extra digits}}}}, {{{{fused fingers}}}}, {{{{more than 5 fingers}}}}, 6 fingers, extra finger, {bad hands}, {bad feet}, {{{deformed}}}, {{{disfigured}}}, gross proportions, {{{mutation}}}, low quality, normal quality, lowres, worst quality, jpeg artifacts, signature, text, watermark, username, censored, mosaic censoring, bar censor, chibi, 3d render, realistic photo"
+  },
+  "auto_tag_map": {
+    "description": "口语翻译表",
+    "hint": "一行一条，格式：口语描述 => 补上的 tag。prompt 里出现左边的词就自动追加右边的 tag（只加不改，精确子串匹配）。留空则不启用。",
+    "type": "text",
+    "default": ""
+  },
+  "cooldown_seconds": {
+    "description": "冷却时间（秒）",
+    "hint": "同一会话两次出图的最小间隔，防止连点烧额度。0 表示不限。",
+    "type": "int",
+    "default": 30
+  },
+  "wait_message": {
+    "description": "等待提示语",
+    "hint": "出图要 10~15 秒，先发一句避免显得卡住。留空则不提示。",
+    "type": "string",
+    "default": "等一下"
+  }
+}
