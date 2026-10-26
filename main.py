@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -40,12 +41,22 @@ _SFW_NEGATIVE = (
 )
 
 
+DATA_DIR_CANDIDATES = (
+    "/AstrBot/data/plugin_data/astrbot_plugin_nai_draw",
+    "/AstrBot/data/plugin_data/astrbot_plugin_yuki_draw",
+    "/AstrBot/data/yuki_draw",
+)
+
+# 老版本用过的数据目录，首次启动时把里面的东西搬过来
+LEGACY_DATA_DIRS = (
+    "/AstrBot/data/plugin_data/astrbot_plugin_yuki_draw",
+    "/AstrBot/data/yuki_draw",
+)
+
+
 def _pick_data_dir() -> str:
     """选一个可写的数据目录：优先标准插件数据目录，其次退回旧位置。"""
-    for cand in (
-        "/AstrBot/data/plugin_data/astrbot_plugin_yuki_draw",
-        "/AstrBot/data/yuki_draw",
-    ):
+    for cand in DATA_DIR_CANDIDATES:
         try:
             os.makedirs(cand, exist_ok=True)
             probe = os.path.join(cand, ".write_test")
@@ -66,6 +77,11 @@ INDEX_FILE = os.path.join(DATA_DIR, "tag_index.json")
 LIB_FILE = os.path.join(DATA_DIR, "tag_library.json")
 RECIPE_MISS_FILE = os.path.join(DATA_DIR, "recipe_miss.log")
 
+# 精准参考（Vibe Transfer）用
+REF_DIR = os.path.join(DATA_DIR, "references")
+PRESET_FILE = os.path.join(DATA_DIR, "reference_presets.json")
+DEFAULT_SITE_BASE = "https://dangao.iisbo.com"
+
 
 def _seed_data_files() -> None:
     """把包内 data/ 的初始文件复制到 DATA_DIR（目标已存在则跳过）。"""
@@ -81,9 +97,10 @@ def _seed_data_files() -> None:
             logger.warning(f"{LOG_TAG} 释放 {name} 失败: {exc}")
 
 
-# 兼容旧位置：老版本把数据放在 /AstrBot/data/yuki_draw，首次启动时迁过去
-_LEGACY_DIR = "/AstrBot/data/yuki_draw"
-if DATA_DIR != _LEGACY_DIR and os.path.isdir(_LEGACY_DIR):
+# 兼容旧位置：老版本把数据放在别的目录，首次启动时迁过去
+for _LEGACY_DIR in LEGACY_DATA_DIRS:
+    if DATA_DIR == _LEGACY_DIR or not os.path.isdir(_LEGACY_DIR):
+        continue
     for _old, _new in (
         ("tag_library.json", LIB_FILE),
         ("tag_index.json", INDEX_FILE),
@@ -96,6 +113,23 @@ if DATA_DIR != _LEGACY_DIR and os.path.isdir(_LEGACY_DIR):
                 logger.info(f"{LOG_TAG} 已从旧目录迁移: {_old}")
             except Exception:  # noqa: BLE001
                 pass
+
+    # 人设表与参考图目录也搬
+    _old_presets = os.path.join(_LEGACY_DIR, "reference_presets.json")
+    if os.path.isfile(_old_presets) and not os.path.exists(PRESET_FILE):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            shutil.copy2(_old_presets, PRESET_FILE)
+            logger.info(f"{LOG_TAG} 已从旧目录迁移: reference_presets.json")
+        except Exception:  # noqa: BLE001
+            pass
+    _old_refs = os.path.join(_LEGACY_DIR, "references")
+    if os.path.isdir(_old_refs) and not os.path.isdir(REF_DIR):
+        try:
+            shutil.copytree(_old_refs, REF_DIR)
+            logger.info(f"{LOG_TAG} 已从旧目录迁移: references/")
+        except Exception:  # noqa: BLE001
+            pass
 
 _seed_data_files()
 
@@ -136,6 +170,20 @@ class NaiDraw(Star):
         self.wait_message = str(cfg.get("wait_message") or "").strip()
         self.save_dir = DATA_DIR
 
+        # ── 精准参考（站内 Vibe Transfer）──
+        self.site_base = str(cfg.get("site_base_url") or DEFAULT_SITE_BASE).strip().rstrip("/")
+        self.site_email = str(cfg.get("site_email") or "").strip()
+        self.site_password = str(cfg.get("site_password") or "")
+        self.precise_enabled = bool(cfg.get("precise_enabled", False))
+        self.precise_strength = float(cfg.get("precise_strength") or 0.6)
+        self.precise_mode = str(cfg.get("precise_mode") or "auto").strip().lower()
+        self.precise_retries = int(cfg.get("precise_retries") or 3)
+        self.active_preset = str(cfg.get("active_preset") or "").strip()
+        self._site_token = ""
+        self._site_token_exp = 0.0
+        os.makedirs(REF_DIR, exist_ok=True)
+        self._presets: dict[str, dict] = self._load_presets()
+
         # 自动补全表：LLM 写的词 -> 补上的 tag。每行 "原文 => tag1, tag2"
         self.auto_map: list[tuple[str, str]] = []
         for line in str(cfg.get("auto_tag_map") or "").splitlines():
@@ -168,6 +216,15 @@ class NaiDraw(Star):
             ("config", self.web_save_config, ["POST"], "保存生图配置"),
             ("test", self.web_test, ["POST"], "测试中转站连通性"),
             ("stats", self.web_stats, ["GET"], "读取用量统计"),
+            ("presets", self.web_get_presets, ["GET"], "列出精准参考人设"),
+            ("preset/save", self.web_save_preset, ["POST"], "新增或修改人设"),
+            ("preset/delete", self.web_delete_preset, ["POST"], "删除人设"),
+            ("preset/activate", self.web_activate_preset, ["POST"], "设当前人设"),
+            ("preset/upload", self.web_upload_ref, ["POST"], "上传参考图"),
+            ("preset/remove", self.web_remove_ref, ["POST"], "删除参考图"),
+            ("ref-image", self.web_ref_image, ["GET"], "读取参考图"),
+            ("site-login", self.web_site_login, ["POST"], "测试站内登录"),
+            ("precise-test", self.web_precise_test, ["POST"], "精准参考试跑"),
         ):
             try:
                 self.context.register_web_api(f"{base}/{path}", fn, methods, desc)
@@ -618,10 +675,11 @@ class NaiDraw(Star):
 
         出图约 10~15 秒。同一会话两次之间至少间隔冷却时间。
         """
-        if not self.api_keys:
-            return "出图失败：未配置 API Key（在插件配置页填写中转站地址和 key）"
-        if not self.api_url:
-            return "出图失败：未配置中转站地址（在插件配置页填写 api_url）"
+        if not self._precise_ready():
+            if not self.api_keys:
+                return "出图失败：未配置 API Key（在插件配置页填写中转站地址和 key）"
+            if not self.api_url:
+                return "出图失败：未配置中转站地址（在插件配置页填写 api_url）"
 
         umo = str(event.unified_msg_origin or "")
         now = time.time()
@@ -629,11 +687,6 @@ class NaiDraw(Star):
         if self.cooldown and now - last < self.cooldown:
             remain = int(self.cooldown - (now - last)) + 1
             return f"现在不能出图，{remain} 秒后再试"
-
-        candidates = self._candidates()
-        if not candidates:
-            logger.warning(f"{LOG_TAG} 所有 key 都在冷却：{self._cooldown_report()}")
-            return "出图失败：所有 key 暂时不可用，稍后再试"
 
         # 配方点名：把 [[配方:名字]] 换成库里那串 tag
         prompt, recipe_tags = self._expand_recipes(prompt)
@@ -647,6 +700,22 @@ class NaiDraw(Star):
                 await event.send(MessageChain().message(self.wait_message))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"{LOG_TAG} 发送等待提示失败: {exc}")
+
+        # 精准参考优先：开了开关、有账号、有人设图，就走站内 Vibe Transfer
+        if self._precise_ready():
+            try:
+                path = await self._precise_generate(prompt, orientation, recipe_tags)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"{LOG_TAG} 精准参考出图失败: {exc}")
+                return f"出图失败（精准参考）：{str(exc)[:200]}"
+            self._cleanup()
+            event.set_result(event.image_result(path))
+            return None
+
+        candidates = self._candidates()
+        if not candidates:
+            logger.warning(f"{LOG_TAG} 所有 key 都在冷却：{self._cooldown_report()}")
+            return "出图失败：所有 key 暂时不可用，稍后再试"
 
         errors = []
         for key in candidates:
@@ -680,6 +749,436 @@ class NaiDraw(Star):
         logger.error(f"{LOG_TAG} 全部 key 失败：{errors}")
         return "出图失败：" + "；".join(errors[:2])
 
+    # ---------------- 精准参考（Vibe Transfer）----------------
+    def _load_presets(self) -> dict:
+        try:
+            with open(PRESET_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return {k: v for k, v in d.items() if isinstance(v, dict)}
+        except FileNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG_TAG} 人设表读取失败: {exc}")
+        return {}
+
+    def _save_presets(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(PRESET_FILE), exist_ok=True)
+            tmp = PRESET_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._presets, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, PRESET_FILE)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG_TAG} 人设表保存失败: {exc}")
+
+    def _preset_dir(self, name: str) -> str:
+        safe = re.sub(r"[^\w\u4e00-\u9fa5.-]+", "_", str(name)).strip("._")[:40] or "_preset"
+        d = os.path.join(REF_DIR, safe)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _preset_image_paths(self, name: str) -> list[str]:
+        p = self._presets.get(name) or {}
+        out = []
+        for fn in p.get("images") or []:
+            fp = os.path.join(self._preset_dir(name), os.path.basename(str(fn)))
+            if os.path.isfile(fp):
+                out.append(fp)
+        return out
+
+    def _active_preset_name(self) -> str:
+        if self.active_preset and self._preset_image_paths(self.active_preset):
+            return self.active_preset
+        for n in self._presets:
+            if self._preset_image_paths(n):
+                return n
+        return ""
+
+    def _precise_ready(self) -> bool:
+        if not self.precise_enabled:
+            return False
+        if not (self.site_email and self.site_password):
+            return False
+        return bool(self._active_preset_name())
+
+    async def _site_login(self, force: bool = False) -> str:
+        # 站内登录取令牌，缓存 6 小时
+        if not (self.site_email and self.site_password):
+            raise RuntimeError("未配置站内账号（site_email / site_password）")
+        if not force and self._site_token and time.time() < self._site_token_exp:
+            return self._site_token
+        payload = {"email": self.site_email, "password": self.site_password, "remember_me": 30}
+        timeout = aiohttp.ClientTimeout(total=40)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.post(f"{self.site_base}/api/login", json=payload) as r:
+                raw = await r.read()
+                if r.status != 200:
+                    raise RuntimeError(
+                        f"站内登录失败 HTTP {r.status}: {raw[:200].decode('utf-8', 'replace')}"
+                    )
+                d = json.loads(raw)
+        tok = str(d.get("token") or "").strip()
+        if not tok:
+            raise RuntimeError("站内登录未返回 token")
+        self._site_token = tok
+        self._site_token_exp = time.time() + 6 * 3600
+        user = d.get("user") or {}
+        logger.info(f"{LOG_TAG} 站内登录成功: {user.get('username') or user.get('email')}")
+        return tok
+
+    async def _precise_generate(self, prompt: str, orientation: str,
+                                extra_tags: list[str] | None = None) -> str:
+        # 走站内 Vibe Transfer：参考图提取特征，构图由 prompt 决定
+        name = self._active_preset_name()
+        if not name:
+            raise RuntimeError("没有可用的人设参考图")
+        paths = self._preset_image_paths(name)
+        refs = []
+        for fp in paths:
+            with open(fp, "rb") as f:
+                refs.append(base64.b64encode(f.read()).decode())
+        if not refs:
+            raise RuntimeError(f"人设「{name}」的参考图都读不到")
+
+        preset = self._presets.get(name) or {}
+        strength = float(preset.get("strength") or self.precise_strength)
+        w, h = self.landscape if str(orientation).lower().startswith("land") else self.portrait
+        full_input = self._build_input(prompt, extra_tags)
+        neg = self._effective_negative()
+
+        mode = str(self.precise_mode or "auto").lower()
+        tries = max(1, int(self.precise_retries or 1))
+        logger.info(
+            f"{LOG_TAG} 精准参考出图 人设={name} 参考图={len(refs)} 强度={strength} "
+            f"尺寸={w}x{h} 模式={mode} 重试={tries} prompt={len(full_input)}字符"
+        )
+
+        base = {
+            "width": w, "height": h,
+            "scale": self.scale, "steps": self.steps, "sampler": self.sampler,
+            "negative_prompt": neg,
+            "v4_prompt": {
+                "caption": {"base_caption": full_input, "char_captions": []},
+                "use_coords": False, "use_order": True,
+            },
+            "v4_negative_prompt": {
+                "caption": {"base_caption": neg, "char_captions": []},
+                "legacy_uc": False,
+            },
+            "legacy_uc": False,
+            "prefer_brownian": True,
+            "deliberate_euler_ancestral_bug": False,
+        }
+
+        def vibe_params() -> dict:
+            p = dict(base)
+            p.update({
+                "reference_image_multiple": refs,
+                "reference_information_extracted_multiple": [1.0] * len(refs),
+                "reference_strength_multiple": [strength] * len(refs),
+                "normalize_reference_strength_multiple": True,
+            })
+            return p
+
+        def director_params() -> dict:
+            # 精确参考：上游成功率不稳，靠重试补
+            p = dict(base)
+            p.update({
+                "director_reference_images": refs,
+                "director_reference_strength_values": [strength] * len(refs),
+                "director_reference_secondary_strength_values": [0.3] * len(refs),
+                "director_reference_information_extracted": [1] * len(refs),
+                "director_reference_descriptions": [
+                    {"caption": {"base_caption": "character&style", "char_captions": []},
+                     "legacy_uc": False}
+                    for _ in refs
+                ],
+            })
+            return p
+
+        order: list[tuple[str, dict]] = []
+        if mode in ("director", "auto"):
+            order.append(("精确参考", director_params()))
+        if mode in ("vibe", "auto") or not order:
+            order.append(("氛围参考", vibe_params()))
+
+        errors: list[str] = []
+        for mi, (label, params) in enumerate(order):
+            for i in range(1, tries + 1):
+                try:
+                    path = await self._submit_and_wait(full_input, params, label, i, tries)
+                    if mi > 0:
+                        logger.warning(f"{LOG_TAG} 前面的「{order[0][0]}」全部失败，已回退到「{label}」")
+                    return path
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{label}#{i}: {str(exc)[:110]}")
+                    logger.warning(f"{LOG_TAG} {label} 第 {i}/{tries} 次失败: {str(exc)[:150]}")
+                    if i < tries:
+                        await asyncio.sleep(min(8, 2 + i * 2))
+        raise RuntimeError("；".join(errors[-3:]) or "精准参考出图失败")
+
+    async def _submit_and_wait(self, full_input: str, params: dict,
+                               label: str, attempt: int, tries: int) -> str:
+        body = {"model": self.model, "input": full_input,
+                "action": "generate", "parameters": params}
+        tok = await self._site_login()
+        hdr = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.post(f"{self.site_base}/api/novelai/generate",
+                                 json=body, headers=hdr) as r:
+                raw = await r.read()
+                if r.status != 200:
+                    raise RuntimeError(
+                        f"提交失败 HTTP {r.status}: {raw[:160].decode('utf-8', 'replace')}"
+                    )
+                q = json.loads(raw)
+        tid = str(q.get("task_id") or "").strip()
+        if not tid:
+            raise RuntimeError(f"未拿到 task_id: {raw[:160].decode('utf-8', 'replace')}")
+        logger.info(
+            f"{LOG_TAG} [{label} {attempt}/{tries}] 已排队 {tid} "
+            f"eta={q.get('queue', {}).get('eta_seconds')}s"
+        )
+
+        img_url = ""
+        deadline = time.time() + 240
+        while time.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as sess:
+                    async with sess.get(f"{self.site_base}/api/novelai/task/{tid}",
+                                        headers={"Authorization": f"Bearer {tok}"}) as r:
+                        d = json.loads(await r.read())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"{LOG_TAG} 轮询异常（继续等）: {exc}")
+                continue
+            st = str(d.get("status") or "")
+            if st == "failed":
+                raise RuntimeError(str(d.get("error") or "生成失败")[:200])
+            res = d.get("result") or {}
+            if res.get("images"):
+                img_url = str(res.get("final_image") or res["images"][0].get("url") or "")
+                break
+        if not img_url:
+            raise RuntimeError("等待生成超时（240 秒）")
+
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.get(f"{self.site_base}{img_url}",
+                                headers={"Authorization": f"Bearer {tok}"}) as r:
+                data = await r.read()
+                if r.status != 200:
+                    raise RuntimeError(f"下载图片失败 HTTP {r.status}")
+
+        path = os.path.join(self.save_dir, f"{int(time.time() * 1000)}.png")
+        with open(path, "wb") as f:
+            f.write(data)
+        logger.info(
+            f"{LOG_TAG} 精准参考出图完成 [{label}] {len(data)} 字节 -> {os.path.basename(path)}"
+        )
+        return path
+
+    # ---------------- 精准参考 WebUI 接口 ----------------
+    def _preset_public(self) -> list[dict]:
+        active = self._active_preset_name()
+        out = []
+        for name, p in self._presets.items():
+            imgs = self._preset_image_paths(name)
+            out.append({
+                "name": name,
+                "strength": float(p.get("strength") or self.precise_strength),
+                "count": len(imgs),
+                "images": [os.path.basename(x) for x in imgs],
+                "active": name == active,
+            })
+        out.sort(key=lambda x: (not x["active"], x["name"]))
+        return out
+
+    async def web_get_presets(self):
+        return jsonify({
+            "success": True,
+            "presets": self._preset_public(),
+            "enabled": self.precise_enabled,
+            "active": self._active_preset_name(),
+            "has_account": bool(self.site_email and self.site_password),
+            "default_strength": self.precise_strength,
+            "mode": self.precise_mode,
+            "retries": self.precise_retries,
+        })
+
+    async def web_save_preset(self):
+        try:
+            d = await request.get_json() or {}
+            name = str(d.get("name") or "").strip()[:40]
+            if not name:
+                return jsonify({"success": False, "message": "人设名不能为空"}), 400
+            old = str(d.get("rename_from") or "").strip()
+            if old and old != name:
+                if name in self._presets:
+                    return jsonify({"success": False, "message": f"人设「{name}」已存在"}), 400
+                p = self._presets.pop(old, None)
+                if p is None:
+                    return jsonify({"success": False, "message": "要改名的人设不存在"}), 400
+                src, dst = self._preset_dir(old), self._preset_dir(name)
+                for fn in p.get("images") or []:
+                    a, b = os.path.join(src, fn), os.path.join(dst, fn)
+                    if os.path.isfile(a) and not os.path.exists(b):
+                        try:
+                            shutil.move(a, b)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(f"{LOG_TAG} 迁移参考图失败 {fn}: {exc}")
+                self._presets[name] = p
+            p = self._presets.setdefault(name, {"images": []})
+            p.setdefault("images", [])
+            if "strength" in d:
+                try:
+                    p["strength"] = max(0.0, min(1.0, float(d["strength"])))
+                except Exception:  # noqa: BLE001
+                    pass
+            self._save_presets()
+            return jsonify({"success": True, "message": "已保存"})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{LOG_TAG} 保存人设失败: {exc}")
+            return jsonify({"success": False, "message": f"保存失败：{exc}"}), 500
+
+    async def web_delete_preset(self):
+        try:
+            d = await request.get_json() or {}
+            name = str(d.get("name") or "").strip()
+            if name not in self._presets:
+                return jsonify({"success": False, "message": "人设不存在"}), 400
+            self._presets.pop(name, None)
+            self._save_presets()
+            try:
+                shutil.rmtree(self._preset_dir(name), ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+            return jsonify({"success": True, "message": "已删除"})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"success": False, "message": f"删除失败：{exc}"}), 500
+
+    async def web_activate_preset(self):
+        try:
+            d = await request.get_json() or {}
+            name = str(d.get("name") or "").strip()
+            if name and name not in self._presets:
+                return jsonify({"success": False, "message": "人设不存在"}), 400
+            self.active_preset = name
+            cfg = getattr(self, "_native_config", None)
+            if cfg is not None:
+                try:
+                    cfg["active_preset"] = name
+                    cfg.save_config()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"{LOG_TAG} 当前人设未落盘: {exc}")
+            return jsonify({"success": True, "message": f"当前人设：{name or '（无）'}"})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"success": False, "message": f"切换失败：{exc}"}), 500
+
+    async def web_upload_ref(self):
+        try:
+            d = await request.get_json() or {}
+            name = str(d.get("preset") or "").strip()
+            if name not in self._presets:
+                return jsonify({"success": False, "message": "先选一个人设"}), 400
+            raw = str(d.get("data_b64") or "")
+            if "," in raw and raw.lstrip().startswith("data:"):
+                raw = raw.split(",", 1)[1]
+            if not raw:
+                return jsonify({"success": False, "message": "没有图片数据"}), 400
+            blob = base64.b64decode(raw)
+            if not blob:
+                return jsonify({"success": False, "message": "图片为空"}), 400
+            if len(blob) > 12 * 1024 * 1024:
+                return jsonify({"success": False, "message": "图片超过 12MB"}), 400
+            fn = str(d.get("filename") or "ref.png").strip()
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                ext = ".png"
+            if not (blob[:8] == b"\x89PNG\r\n\x1a\n" or blob[:2] == b"\xff\xd8"
+                    or blob[:4] == b"RIFF"):
+                return jsonify({"success": False, "message": "只收 PNG / JPEG / WebP"}), 400
+            out = f"{int(time.time() * 1000)}{ext}"
+            with open(os.path.join(self._preset_dir(name), out), "wb") as f:
+                f.write(blob)
+            p = self._presets[name]
+            p.setdefault("images", []).append(out)
+            self._save_presets()
+            logger.info(f"{LOG_TAG} 人设「{name}」新增参考图 {out} ({len(blob)} 字节)")
+            return jsonify({"success": True, "message": f"已添加（{len(p['images'])} 张）"})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{LOG_TAG} 上传参考图失败: {exc}")
+            return jsonify({"success": False, "message": f"上传失败：{exc}"}), 500
+
+    async def web_remove_ref(self):
+        try:
+            d = await request.get_json() or {}
+            name = str(d.get("preset") or "").strip()
+            fn = os.path.basename(str(d.get("filename") or ""))
+            p = self._presets.get(name)
+            if not p or fn not in (p.get("images") or []):
+                return jsonify({"success": False, "message": "找不到这张图"}), 400
+            p["images"].remove(fn)
+            self._save_presets()
+            try:
+                os.remove(os.path.join(self._preset_dir(name), fn))
+            except Exception:  # noqa: BLE001
+                pass
+            return jsonify({"success": True, "message": "已删除"})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"success": False, "message": f"删除失败：{exc}"}), 500
+
+    async def web_ref_image(self):
+        from quart import Response
+
+        name = str(request.args.get("preset") or "")
+        fn = os.path.basename(str(request.args.get("file") or ""))
+        fp = os.path.join(self._preset_dir(name), fn)
+        if not (name and fn and os.path.isfile(fp)):
+            return Response(b"", status=404)
+        ext = os.path.splitext(fn)[1].lower()
+        mime = {".png": "image/png", ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(ext, "application/octet-stream")
+        with open(fp, "rb") as f:
+            return Response(f.read(), mimetype=mime)
+
+    async def web_site_login(self):
+        try:
+            tok = await self._site_login(force=True)
+            return jsonify({"success": True,
+                            "message": f"站内登录成功，令牌 {len(tok)} 字符"})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"success": False, "message": str(exc)[:300]}), 500
+
+    async def web_precise_test(self):
+        # 用当前人设跑一次最小出图，验证整条链路
+        try:
+            d = await request.get_json(silent=True) or {}
+            prompt = str(d.get("prompt") or "").strip()
+            if not prompt:
+                prompt = ("1girl, solo, long wavy hair, maid outfit, white apron, "
+                          "sitting at an outdoor cafe table, holding a teacup, "
+                          "looking at viewer, gentle smile, warm afternoon sunlight, best quality")
+            if not self._precise_ready():
+                return jsonify({
+                    "success": False,
+                    "message": "还没就绪：需要开启精准参考、填站内账号、并有人设参考图",
+                }), 400
+            path = await self._precise_generate(prompt, "portrait", None)
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            name = self._active_preset_name()
+            return jsonify({"success": True,
+                            "message": f"出图成功（人设：{name}，{len(b64) * 3 // 4} 字节）",
+                            "image_b64": b64})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{LOG_TAG} 精准参考试跑失败: {exc}")
+            return jsonify({"success": False, "message": str(exc)[:300]}), 500
+
     # ---------------- WebUI 接口 ----------------
     def _config_for_page(self) -> dict:
         """给配置页的当前值（密钥掩码）。"""
@@ -707,8 +1206,22 @@ class NaiDraw(Star):
             "auto_tag_map": "\n".join(f"{k} => {v}" for k, v in self.auto_map),
         }
 
+    def _precise_config_for_page(self) -> dict:
+        return {
+            "site_base_url": self.site_base,
+            "site_email": self.site_email,
+            "site_password": "***" if self.site_password else "",
+            "precise_enabled": self.precise_enabled,
+            "precise_strength": self.precise_strength,
+            "precise_mode": self.precise_mode,
+            "precise_retries": self.precise_retries,
+            "active_preset": self.active_preset,
+        }
+
     async def web_get_config(self):
-        return jsonify({"success": True, "config": self._config_for_page()})
+        cfg = self._config_for_page()
+        cfg.update(self._precise_config_for_page())
+        return jsonify({"success": True, "config": cfg})
 
     async def web_save_config(self):
         try:
@@ -735,6 +1248,19 @@ class NaiDraw(Star):
                 cfg["key_cooldown_seconds"] = int(data["key_cooldown_seconds"] or 600)
             if "nsfw" in data:
                 cfg["nsfw"] = bool(data["nsfw"])
+            if "precise_enabled" in data:
+                cfg["precise_enabled"] = bool(data["precise_enabled"])
+            if "precise_strength" in data:
+                cfg["precise_strength"] = float(data["precise_strength"] or 0.6)
+            if "precise_mode" in data and isinstance(data["precise_mode"], str):
+                cfg["precise_mode"] = data["precise_mode"]
+            if "precise_retries" in data:
+                cfg["precise_retries"] = max(1, min(10, int(data["precise_retries"] or 3)))
+            if str(data.get("site_password") or "") not in ("", "***"):
+                cfg["site_password"] = str(data["site_password"])
+            for f in ("site_base_url", "site_email"):
+                if f in data and isinstance(data[f], str):
+                    cfg[f] = data[f]
             for f in ("model", "sampler", "artist_string", "extra_tags",
                       "quality_tags", "negative_prompt", "wait_message"):
                 if f in data and isinstance(data[f], str):
@@ -818,6 +1344,17 @@ class NaiDraw(Star):
         self.api_keys = [k.strip() for k in raw.replace(",", "\n").splitlines() if k.strip()]
         self.key_cooldown = int(cfg.get("key_cooldown_seconds") or 600)
         self.model = str(cfg.get("model") or self.model).strip()
+        self.site_base = str(cfg.get("site_base_url") or DEFAULT_SITE_BASE).strip().rstrip("/")
+        self.site_email = str(cfg.get("site_email") or "").strip()
+        if str(cfg.get("site_password") or "") not in ("", "***"):
+            self.site_password = str(cfg.get("site_password"))
+        self.precise_enabled = bool(cfg.get("precise_enabled", False))
+        self.precise_strength = float(cfg.get("precise_strength") or 0.6)
+        self.precise_mode = str(cfg.get("precise_mode") or "auto").strip().lower()
+        self.precise_retries = int(cfg.get("precise_retries") or 3)
+        self.active_preset = str(cfg.get("active_preset") or "").strip()
+        self._site_token = ""
+        self._site_token_exp = 0.0
         self.artist = str(cfg.get("artist_string") or "").strip()
         self.extra_fixed = str(cfg.get("extra_tags") or "").strip()
         self.nsfw = bool(cfg.get("nsfw", True))

@@ -100,5 +100,53 @@
     "hint": "出图要 10~15 秒，先发一句避免显得卡住。留空则不提示。",
     "type": "string",
     "default": "等一下"
+  },
+  "site_base_url": {
+    "description": "站内地址",
+    "hint": "精准参考需要登录中转站站点，这里填站点根地址（不要带 /api）。",
+    "type": "string",
+    "default": "https://dangao.iisbo.com"
+  },
+  "site_email": {
+    "description": "站内账号（邮箱）",
+    "hint": "中转站只支持 QQ 邮箱登录。填了之后精准参考会自动登录取令牌，令牌缓存 6 小时。",
+    "type": "string",
+    "default": ""
+  },
+  "site_password": {
+    "description": "站内密码",
+    "hint": "只存在本机配置文件里，用于自动登录取令牌。",
+    "type": "string",
+    "default": ""
+  },
+  "precise_enabled": {
+    "description": "启用精准参考",
+    "hint": "开启后出图会带上当前人设的参考图（Vibe Transfer），能稳定保持角色特征并自由换场景。每次约消耗 7 贝壳。人设和参考图在插件的设置页里管理。",
+    "type": "bool",
+    "default": false
+  },
+  "precise_strength": {
+    "description": "默认参考强度",
+    "hint": "0.5 偏保守（更像参考图），0.7 偏自由。每个人设可以单独覆盖。",
+    "type": "float",
+    "default": 0.6
+  },
+  "precise_mode": {
+    "description": "参考机制",
+    "hint": "auto = 先试精确参考（角色锁定更准，但中转站上游经常报错），失败自动回退氛围参考；director = 只用精确参考；vibe = 只用氛围参考。",
+    "type": "string",
+    "default": "auto"
+  },
+  "precise_retries": {
+    "description": "重试次数",
+    "hint": "精确参考上游不稳定，失败会自动重试。设 3~4 次命中率明显提升；每次约 6 点。氛围参考基本一次就成。",
+    "type": "int",
+    "default": 3
+  },
+  "active_preset": {
+    "description": "当前人设",
+    "hint": "由设置页自动维护，一般不用手改。",
+    "type": "string",
+    "default": ""
   }
 }
