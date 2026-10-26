@@ -82,6 +82,9 @@ REF_DIR = os.path.join(DATA_DIR, "references")
 PRESET_FILE = os.path.join(DATA_DIR, "reference_presets.json")
 DEFAULT_SITE_BASE = "https://dangao.iisbo.com"
 
+# 上游硬要求：精确参考的参考图必须正好是 1024x1536（实测其他尺寸一律「上游异常」）
+REF_CANVAS_W, REF_CANVAS_H = 1024, 1536
+
 
 def _seed_data_files() -> None:
     """把包内 data/ 的初始文件复制到 DATA_DIR（目标已存在则跳过）。"""
@@ -787,6 +790,40 @@ class NaiDraw(Star):
                 out.append(fp)
         return out
 
+    def _ref_image_b64(self, path: str) -> str:
+        # 把参考图归一化到 1024x1536 再 base64。上游只认这个尺寸。
+        raw = b""
+        try:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                if im.size == (REF_CANVAS_W, REF_CANVAS_H):
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                else:
+                    src = im.convert("RGBA")
+                    src.thumbnail((REF_CANVAS_W, REF_CANVAS_H), Image.LANCZOS)
+                    canvas = Image.new("RGB", (REF_CANVAS_W, REF_CANVAS_H), (0, 0, 0))
+                    x = (REF_CANVAS_W - src.width) // 2
+                    y = (REF_CANVAS_H - src.height) // 2
+                    canvas.paste(src, (x, y), src)
+                    buf = io.BytesIO()
+                    canvas.save(buf, format="PNG")
+                    raw = buf.getvalue()
+                    try:
+                        with open(path, "wb") as f:
+                            f.write(raw)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    logger.info(
+                        f"{LOG_TAG} 参考图已归一化 1024x1536: {os.path.basename(path)}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG_TAG} 参考图归一化失败，按原图发送: {exc}")
+            with open(path, "rb") as f:
+                raw = f.read()
+        return base64.b64encode(raw).decode()
+
     def _active_preset_name(self) -> str:
         if self.active_preset and self._preset_image_paths(self.active_preset):
             return self.active_preset
@@ -834,10 +871,7 @@ class NaiDraw(Star):
         if not name:
             raise RuntimeError("没有可用的人设参考图")
         paths = self._preset_image_paths(name)
-        refs = []
-        for fp in paths:
-            with open(fp, "rb") as f:
-                refs.append(base64.b64encode(f.read()).decode())
+        refs = [self._ref_image_b64(fp) for fp in paths]
         if not refs:
             raise RuntimeError(f"人设「{name}」的参考图都读不到")
 
@@ -1103,8 +1137,11 @@ class NaiDraw(Star):
                     or blob[:4] == b"RIFF"):
                 return jsonify({"success": False, "message": "只收 PNG / JPEG / WebP"}), 400
             out = f"{int(time.time() * 1000)}{ext}"
-            with open(os.path.join(self._preset_dir(name), out), "wb") as f:
+            fp_new = os.path.join(self._preset_dir(name), out)
+            with open(fp_new, "wb") as f:
                 f.write(blob)
+            # 立刻归一化成 1024x1536，省得每次出图都算
+            self._ref_image_b64(fp_new)
             p = self._presets[name]
             p.setdefault("images", []).append(out)
             self._save_presets()
