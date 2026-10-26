@@ -1,8 +1,27 @@
 name: astrbot_plugin_nai_draw
 display_name: "NovelAI 生图"
-desc: "让 bot 会出图。接 NovelAI 格式中转站，由 LLM 用自然语言触发，支持多 key 轮换、配方库、精准参考（多套人设参考图）、自带 WebUI 设置页。"
+desc: |
+  让 bot 会出图。接 NovelAI 格式中转站，由 LLM 用自然语言触发，无需命令和关键词。
+
+  **特性**
+  - 自然语言触发：LLM 自己判断何时画图，你正常聊天就行
+  - 构图自由：不注入 solo 等任何前缀，构图完全由提示词决定
+  - 多 key 轮换：某个 key 报错自动冷却并切换
+  - 配方库：110 条场景配方 + 45 条别名，LLM 可写 `[[配方:名字]]` 点名
+  - 本地 tag 查询：16,007 条社区法典索引
+  - 精准参考：多套人设，每套可上传多张参考图，出图时锁定角色特征、场景仍自由
+  - NSFW 开关：一个开关同时控制正向 nsfw 和负面的一整套遮挡词
+  - 自带设置页：WebUI 里填地址和 key，保存即时生效
 short_desc: "自然语言触发的 NovelAI 生图"
 author: "WhitesilkCola"
 version: "1.1.0"
 repo: "https://github.com/WhitesilkCola/astrbot_plugin_nai_draw"
+social_link: "https://github.com/WhitesilkCola"
 astrbot_version: ">=4.26,<5"
+tags:
+  - 图片
+  - AI
+  - NovelAI
+  - 画图
+  - WebUI
+  - 工具
