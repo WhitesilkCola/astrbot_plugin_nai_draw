@@ -80,6 +80,7 @@ RECIPE_MISS_FILE = os.path.join(DATA_DIR, "recipe_miss.log")
 # 精准参考（Vibe Transfer）用
 REF_DIR = os.path.join(DATA_DIR, "references")
 PRESET_FILE = os.path.join(DATA_DIR, "reference_presets.json")
+GLOBAL_COOLDOWN_FILE = os.path.join(DATA_DIR, "global_cooldown.json")
 DEFAULT_SITE_BASE = "https://dangao.iisbo.com"
 
 # 上游硬要求：精确参考的参考图必须正好是 1024x1536（实测其他尺寸一律「上游异常」）
@@ -170,6 +171,7 @@ class NaiDraw(Star):
         self.portrait = _parse_size(cfg.get("portrait_size"), (832, 1216))
         self.landscape = _parse_size(cfg.get("landscape_size"), (1216, 832))
         self.cooldown = int(cfg.get("cooldown_seconds") or 0)
+        self.global_cooldown = int(float(cfg.get("global_cooldown_minutes") or 0) * 60)
         self.wait_message = str(cfg.get("wait_message") or "").strip()
         self.save_dir = DATA_DIR
 
@@ -199,6 +201,7 @@ class NaiDraw(Star):
 
         self._native_config = config if hasattr(config, "save_config") else None
         self._last_sent: dict[str, float] = {}
+        self._last_global = self._load_global_cooldown()
         self._key_state: dict[str, dict] = {}
         self._index: dict | None = None
         self._recipe_map: tuple[dict, dict] | None = None
@@ -281,6 +284,57 @@ class NaiDraw(Star):
     @staticmethod
     def _mask(key: str) -> str:
         return key[:8] + "…" + key[-4:] if len(key) > 14 else key[:6] + "…"
+
+    def _load_global_cooldown(self) -> float:
+        # 上次全局出图的时间戳，跨重启保留，防止重启绕过限制
+        try:
+            with open(GLOBAL_COOLDOWN_FILE, encoding="utf-8") as f:
+                return float(json.load(f).get("last") or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _save_global_cooldown(self, ts: float) -> None:
+        try:
+            os.makedirs(os.path.dirname(GLOBAL_COOLDOWN_FILE), exist_ok=True)
+            with open(GLOBAL_COOLDOWN_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last": ts}, f)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"{LOG_TAG} 全局冷却时间写入失败: {exc}")
+
+    @staticmethod
+    def _fmt_remain(sec: float) -> str:
+        # 向上取整，但正好 60 时不显示成「1 分 1 秒」
+        sec = int(float(sec) + 0.999)
+        if sec < 60:
+            return f"{sec} 秒"
+        m, s = divmod(sec, 60)
+        if m < 60:
+            return f"{m} 分 {s} 秒" if s else f"{m} 分钟"
+        h, m = divmod(m, 60)
+        return f"{h} 小时 {m} 分"
+
+    def _cooldown_gate(self, umo: str) -> str:
+        # 空串 = 可以出图（并已占用时间戳）；否则返回提示文案
+        now = time.time()
+        last = self._last_sent.get(umo, 0.0)
+        if self.cooldown and now - last < self.cooldown:
+            return f"现在不能出图，{self._fmt_remain(self.cooldown - (now - last))}后再试"
+        if self.global_cooldown:
+            gap = now - self._last_global
+            if 0 <= gap < self.global_cooldown:
+                return (
+                    f"出图太频繁了，{self._fmt_remain(self.global_cooldown - gap)}后再来"
+                    f"（全局限制每 {self._fmt_remain(self.global_cooldown)}一张）"
+                )
+        # 到这里说明两个冷却都过了，占用时间戳
+        self._last_sent[umo] = now
+        if self.global_cooldown:
+            self._last_global = now
+            self._save_global_cooldown(now)
+            logger.info(
+                f"{LOG_TAG} 全局冷却已占用，{self._fmt_remain(self.global_cooldown)}后才可再出图"
+            )
+        return ""
 
     def _cooldown_report(self) -> str:
         now = time.time()
@@ -676,7 +730,8 @@ class NaiDraw(Star):
 
         orientation: "portrait" 竖构图 / "landscape" 横构图
 
-        出图约 10~15 秒。同一会话两次之间至少间隔冷却时间。
+        出图约 10~15 秒。会话冷却和全局冷却都可能让你暂时不能出图，
+        被挡下时直接把剩余时间告诉对方，不要反复重试。
         """
         if not self._precise_ready():
             if not self.api_keys:
@@ -686,17 +741,16 @@ class NaiDraw(Star):
 
         umo = str(event.unified_msg_origin or "")
         now = time.time()
-        last = self._last_sent.get(umo, 0.0)
-        if self.cooldown and now - last < self.cooldown:
-            remain = int(self.cooldown - (now - last)) + 1
-            return f"现在不能出图，{remain} 秒后再试"
+        blocked = self._cooldown_gate(umo)
+        if blocked:
+            return blocked
 
         # 配方点名：把 [[配方:名字]] 换成库里那串 tag
         prompt, recipe_tags = self._expand_recipes(prompt)
         if not prompt:
             return "出图失败：prompt 为空（配方标记可能没解析出来）"
 
-        self._last_sent[umo] = now
+        # 冷却时间戳已在 _cooldown_gate 里占用，这里不用再记
 
         if self.wait_message:
             try:
@@ -1205,6 +1259,9 @@ class NaiDraw(Star):
                     "success": False,
                     "message": "还没就绪：需要开启精准参考、填站内账号、并有人设参考图",
                 }), 400
+            blocked = self._cooldown_gate("webui-test")
+            if blocked:
+                return jsonify({"success": False, "message": blocked}), 429
             path = await self._precise_generate(prompt, "portrait", None)
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
@@ -1239,6 +1296,7 @@ class NaiDraw(Star):
             "quality_tags": self.quality,
             "negative_prompt": self.negative,
             "cooldown_seconds": self.cooldown,
+            "global_cooldown_minutes": round(self.global_cooldown / 60, 2),
             "wait_message": self.wait_message,
             "auto_tag_map": "\n".join(f"{k} => {v}" for k, v in self.auto_map),
         }
@@ -1285,6 +1343,11 @@ class NaiDraw(Star):
                 cfg["key_cooldown_seconds"] = int(data["key_cooldown_seconds"] or 600)
             if "nsfw" in data:
                 cfg["nsfw"] = bool(data["nsfw"])
+            if "global_cooldown_minutes" in data:
+                try:
+                    cfg["global_cooldown_minutes"] = max(0.0, float(data["global_cooldown_minutes"] or 0))
+                except Exception:  # noqa: BLE001
+                    pass
             if "precise_enabled" in data:
                 cfg["precise_enabled"] = bool(data["precise_enabled"])
             if "precise_strength" in data:
@@ -1404,6 +1467,7 @@ class NaiDraw(Star):
         self.portrait = _parse_size(cfg.get("portrait_size"), (832, 1216))
         self.landscape = _parse_size(cfg.get("landscape_size"), (1216, 832))
         self.cooldown = int(cfg.get("cooldown_seconds") or 0)
+        self.global_cooldown = int(float(cfg.get("global_cooldown_minutes") or 0) * 60)
         self.wait_message = str(cfg.get("wait_message") or "").strip()
         self.auto_map = []
         for line in str(cfg.get("auto_tag_map") or "").splitlines():

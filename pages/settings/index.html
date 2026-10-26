@@ -274,7 +274,23 @@
         <div class="hint">一行一条 <span class="mono">口语 =&gt; tag</span>。只加不改。</div>
       </div>
     </div>
-    <div class="row"><label>冷却（秒）</label><div><input id="cooldown_seconds" type="number" min="0" /></div></div>
+    <div class="row">
+      <label>会话冷却（秒）</label>
+      <div>
+        <input id="cooldown_seconds" type="number" min="0" />
+        <div class="hint">同一个会话两次出图的最小间隔。0 表示不限。</div>
+      </div>
+    </div>
+    <div class="row">
+      <label>全局冷却（分钟）</label>
+      <div>
+        <input id="global_cooldown_minutes" type="number" min="0" step="0.5" />
+        <div class="hint">
+          <b>整个插件共用一个计时器</b>：出图一次后这么久内，所有人所有会话都不能再出图。
+          填 <span class="mono">5</span> 就是每 5 分钟一张。0 表示不限。跨重启保留。
+        </div>
+      </div>
+    </div>
     <div class="row"><label>等待提示语</label><div><input id="wait_message" /></div></div>
   </div>
 
@@ -318,6 +334,7 @@
       $("precise_enabled").checked = !!c.precise_enabled;
       $("precise_mode").value = c.precise_mode || "auto";
       $("precise_retries").value = c.precise_retries || 3;
+      if (c.global_cooldown_minutes != null) $("global_cooldown_minutes").value = c.global_cooldown_minutes;
       syncPreciseLabel();
       loadPresets();
     } catch (e) {
@@ -343,6 +360,7 @@
     body.precise_strength = Number($("preset-strength").value) || 0.6;
     body.precise_mode = $("precise_mode").value;
     body.precise_retries = Number($("precise_retries").value) || 3;
+    body.global_cooldown_minutes = Number($("global_cooldown_minutes").value) || 0;
     return body;
   }
 

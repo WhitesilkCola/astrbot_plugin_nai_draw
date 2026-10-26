@@ -89,6 +89,12 @@
     "type": "text",
     "default": ""
   },
+  "global_cooldown_minutes": {
+    "description": "全局冷却（分钟）",
+    "hint": "整个插件共用一个计时器：出图一次后，这么多分钟内所有人、所有会话都不能再出图。0 表示不限制。填 5 就是每 5 分钟一张。跨重启保留。",
+    "type": "float",
+    "default": 0
+  },
   "cooldown_seconds": {
     "description": "冷却时间（秒）",
     "hint": "同一会话两次出图的最小间隔，防止连点烧额度。0 表示不限。",
